@@ -63,16 +63,20 @@ object UdpReplay extends IOApp:
       .through(CaptureFile.udpDatagrams.toPipeByte)
       .through(TimeStamped.throttle(timescale, 1.second))
       .map(_.value)
-      .through(sendAll(destination, portMap))
+      .through(changeDestination(destination, portMap))
+      .through(sendAll)
 
-  def sendAll(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, Nothing] =
+  def changeDestination(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, Datagram] =
     Stream.eval(destination.resolve[IO]).flatMap { destinationIp =>
-      Stream.resource(Network[IO].openDatagramSocket()).flatMap { socket =>
-        datagrams.flatMap(packet =>
-          portMap(packet.udp.destinationPort) match
-            case Some(destPort) =>
-              Stream(Datagram(SocketAddress(destinationIp, destPort), packet.payload))
-            case None => Stream.empty
-        ).through(socket.writes)
-      }
+      datagrams.flatMap(packet =>
+        portMap(packet.udp.destinationPort) match
+          case Some(destPort) =>
+            Stream(Datagram(SocketAddress(destinationIp, destPort), packet.payload))
+          case None => Stream.empty
+      )
+    }
+
+  def sendAll(datagrams: Stream[IO, Datagram]): Stream[IO, Nothing] =
+    Stream.resource(Network[IO].openDatagramSocket()).flatMap { socket =>
+      datagrams.through(socket.writes)
     }
