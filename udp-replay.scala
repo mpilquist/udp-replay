@@ -1,6 +1,6 @@
 //> using scala "3.1.2"
-//> using lib "co.fs2::fs2-io:3.2.11"
-//> using lib "co.fs2::fs2-protocols:3.2.11"
+//> using lib "co.fs2::fs2-io:3.2.11-1-19ce392-20220727T133109Z-SNAPSHOT"
+//> using lib "co.fs2::fs2-protocols:3.2.11-1-19ce392-20220727T133109Z-SNAPSHOT"
 //> using lib "com.monovore::decline::2.2.0"
 
 import cats.data.NonEmptyList
@@ -11,6 +11,9 @@ import com.monovore.decline.*
 import fs2.{Chunk, Stream}
 import fs2.io.file.{Files, Path}
 import fs2.io.net.{Datagram, Network}
+import fs2.protocols.pcap.CaptureFile
+import fs2.timeseries.TimeStamped
+import scala.concurrent.duration.*
 
 object UdpReplay extends IOApp:
   def run(args: List[String]) =
@@ -54,46 +57,21 @@ object UdpReplay extends IOApp:
       case Right((file, timescale, destination, portMapping)) =>
         replay(Path(file), timescale, destination, portMapping).compile.drain.as(ExitCode.Success)
 
-  case class CapturedPacket(
-    source: SocketAddress[IpAddress],
-    destination: SocketAddress[IpAddress],
-    payload: Chunk[Byte])
-
   def replay(file: Path, timescale: Double, destination: Host, portMap: Port => Option[Port]): Stream[IO, Nothing] =
     datagramsInPcapFile(file, timescale).through(sendAll(destination, portMap))
 
-  def datagramsInPcapFile(file: Path, timescale: Double): Stream[IO, CapturedPacket] =
-    import fs2.interop.scodec.StreamDecoder
-    import fs2.timeseries.TimeStamped
-    import fs2.protocols.*
-    import fs2.protocols.pcap.{CaptureFile, LinkType}
-    import scala.concurrent.duration.*
-
-    val decoder: StreamDecoder[TimeStamped[CapturedPacket]] = CaptureFile.payloadStreamDecoderPF {
-      case LinkType.Ethernet =>
-        for
-          ethernetHeader <- ethernet.EthernetFrameHeader.sdecoder
-          ipHeader <- ip.Ipv4Header.sdecoder(ethernetHeader)
-          udpDatagram <- ip.udp.DatagramHeader.sdecoder(ipHeader.protocol)
-          payload <- StreamDecoder.once(scodec.codecs.bytes)
-        yield CapturedPacket(
-          SocketAddress(ipHeader.sourceIp, udpDatagram.sourcePort),
-          SocketAddress(ipHeader.destinationIp, udpDatagram.destinationPort),
-          Chunk.byteVector(payload)
-        )
-    }
-
+  def datagramsInPcapFile(file: Path, timescale: Double): Stream[IO, CaptureFile.DatagramRecord] =
     Files[IO]
       .readAll(file)
-      .through(decoder.toPipeByte)
+      .through(CaptureFile.udpDatagrams.toPipeByte)
       .through(TimeStamped.throttle(timescale, 1.second))
       .map(_.value)
 
-  def sendAll(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CapturedPacket]): Stream[IO, Nothing] =
+  def sendAll(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, Nothing] =
     Stream.eval(destination.resolve[IO]).flatMap { destinationIp =>
       Stream.resource(Network[IO].openDatagramSocket()).flatMap { socket =>
         datagrams.flatMap(packet =>
-          portMap(packet.destination.port) match
+          portMap(packet.udp.destinationPort) match
             case Some(destPort) =>
               Stream(Datagram(SocketAddress(destinationIp, destPort), packet.payload))
             case None => Stream.empty
