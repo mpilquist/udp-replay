@@ -58,14 +58,12 @@ object UdpReplay extends IOApp:
         replay(Path(file), timescale, destination, portMapping).compile.drain.as(ExitCode.Success)
 
   def replay(file: Path, timescale: Double, destination: Host, portMap: Port => Option[Port]): Stream[IO, Nothing] =
-    datagramsInPcapFile(file, timescale).through(sendAll(destination, portMap))
-
-  def datagramsInPcapFile(file: Path, timescale: Double): Stream[IO, CaptureFile.DatagramRecord] =
     Files[IO]
       .readAll(file)
       .through(CaptureFile.udpDatagrams.toPipeByte)
       .through(TimeStamped.throttle(timescale, 1.second))
       .map(_.value)
+      .through(sendAll(destination, portMap))
 
   def sendAll(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, Nothing] =
     Stream.eval(destination.resolve[IO]).flatMap { destinationIp =>
