@@ -50,21 +50,24 @@ object UdpReplay extends IOApp:
       }.orNone.map { portMappings =>
         portMappings.map(_.toList.toMap.get).getOrElse((p: Port) => Some(p))
       }
-      (file, timescale, destination, portMappings).tupled
+      val dryRun = Opts.flag("dryrun", help = "If set, no output is performed").orFalse
+      val verbose = Opts.flag("verbose", help = "If set, each packet is logged to stdout").orFalse
+      (file, timescale, destination, portMappings, dryRun, verbose).tupled
     }
     command.parse(args) match
       case Left(help) => IO(System.err.println(help)).as(ExitCode(-1))
-      case Right((file, timescale, destination, portMapping)) =>
-        replay(Path(file), timescale, destination, portMapping).compile.drain.as(ExitCode.Success)
+      case Right((file, timescale, destination, portMapping, dryRun, verbose)) =>
+        replay(Path(file), timescale, destination, portMapping, dryRun, verbose).compile.drain.as(ExitCode.Success)
 
-  def replay(file: Path, timescale: Double, destination: Host, portMap: Port => Option[Port]): Stream[IO, Nothing] =
+  def replay(file: Path, timescale: Double, destination: Host, portMap: Port => Option[Port], dryRun: Boolean, verbose: Boolean): Stream[IO, Nothing] =
     Files[IO]
       .readAll(file)
       .through(CaptureFile.udpDatagrams.toPipeByte)
       .through(TimeStamped.throttle(timescale, 1.second))
       .map(_.value)
+      .through(if verbose then logPacket else identity)
       .through(changeDestination(destination, portMap))
-      .through(sendAll)
+      .through(if dryRun then _.drain else sendAll)
 
   def changeDestination(destination: Host, portMap: Port => Option[Port])(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, Datagram] =
     Stream.eval(destination.resolve[IO]).flatMap { destinationIp =>
@@ -74,6 +77,14 @@ object UdpReplay extends IOApp:
             Stream(Datagram(SocketAddress(destinationIp, destPort), packet.payload))
           case None => Stream.empty
       )
+    }
+
+  def logPacket(datagrams: Stream[IO, CaptureFile.DatagramRecord]): Stream[IO, CaptureFile.DatagramRecord] =
+    datagrams.evalTap { d =>
+      val src = SocketAddress(d.ip.sourceIp, d.udp.sourcePort)
+      val dest = SocketAddress(d.ip.destinationIp, d.udp.destinationPort)
+      IO.println(s"$src --> $dest") *>
+        IO(d.payload.toByteVector.printHexDump()) *> IO.println("")
     }
 
   def sendAll(datagrams: Stream[IO, Datagram]): Stream[IO, Nothing] =
