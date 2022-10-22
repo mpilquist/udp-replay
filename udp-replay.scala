@@ -1,7 +1,9 @@
-//> using scala "3.1.2"
-//> using lib "co.fs2::fs2-io:3.2.11-1-19ce392-20220727T133109Z-SNAPSHOT"
-//> using lib "co.fs2::fs2-protocols:3.2.11-1-19ce392-20220727T133109Z-SNAPSHOT"
-//> using lib "com.monovore::decline::2.2.0"
+//> using scala "3.2.0"
+//> using packaging.output "udpreplay"
+//> using repository "sonatype-s01:snapshots"
+//> using lib "co.fs2::fs2-io::3.3.0"
+//> using lib "co.fs2::fs2-protocols::3.3.0"
+//> using lib "com.armanbilge::decline::2.2.1-SNAPSHOT"
 
 import cats.data.NonEmptyList
 import cats.effect.{ExitCode, IO, IOApp}
